@@ -61,7 +61,7 @@ void AGACMMDataActor::BuildDistanceTransform() {
 		return;
 	}
 
-	DistanceTransform = FGAGridMap(Grid, -1.0f);
+	DistanceTransform = FGAGridMap(Grid, 0.0f);
 	TQueue<FCellDist> Queue;
 	for (int32 X = 0; X < Grid->XCount; X++)
 	{
@@ -82,6 +82,7 @@ void AGACMMDataActor::BuildDistanceTransform() {
 	}
 
 
+	TSet<FCellRef> Visited;
 	//doing bfs
 	while (!Queue.IsEmpty()) {
 		FCellDist Current;
@@ -90,9 +91,10 @@ void AGACMMDataActor::BuildDistanceTransform() {
 		for (FCellRef N : GetNeighbors(Current.Cell, Grid)) {
 			float Value;
 			DistanceTransform.GetValue(N, Value);
-
+			
+			
 			//skip visited cells
-			if (Value >= 0) {
+			if (Visited.Contains(N)) {
 				continue;
 			}
 
@@ -107,6 +109,7 @@ void AGACMMDataActor::BuildDistanceTransform() {
 			DistanceTransform.SetValue(N, NewDist);
 			
 			Queue.Enqueue(FCellDist(N, NewDist));
+			Visited.Add(N);
 		}
 		
 
