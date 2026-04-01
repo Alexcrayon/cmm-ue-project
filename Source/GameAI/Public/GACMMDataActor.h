@@ -17,6 +17,10 @@ public:
 	// Sets default values for this actor's properties
 	AGACMMDataActor();
 	FGAGridMap DistanceTransform;
+	FGAGridMap SkeletonMap;
+	TArray<FCellRef> SkeletonCells;
+
+
 	UFUNCTION(BlueprintCallable)
 	void BuildDistanceTransform();
 
@@ -29,16 +33,22 @@ public:
 
 	bool IsEdgeCell(const AGAGridActor* Grid, const FCellRef& Cell ) const;
 
+	bool IsSkeletonCell(const AGAGridActor* Grid, const FCellRef& Cell) const;
+
+	UFUNCTION(BlueprintCallable)
+	void BuildSkeleton();
+
 	struct FCellDist
 	{
 		FCellRef Cell;
 		float Distance;
 	};
-
 	TArray<FCellRef> GetNeighbors(const FCellRef& Cell, const AGAGridActor* Grid) const;
 
 	UFUNCTION(BlueprintCallable)
 	void DebugDrawDistanceTransform();
+	UFUNCTION(BlueprintCallable)
+	void DebugDrawSkeleton();
 protected:
 	// Called when the game starts or when spawned
 	virtual void BeginPlay() override;

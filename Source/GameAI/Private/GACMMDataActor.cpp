@@ -63,6 +63,7 @@ void AGACMMDataActor::BuildDistanceTransform() {
 
 	DistanceTransform = FGAGridMap(Grid, 0.0f);
 	TQueue<FCellDist> Queue;
+	TSet<FCellRef> Visited;
 	for (int32 X = 0; X < Grid->XCount; X++)
 	{
 		for (int32 Y = 0; Y < Grid->YCount; Y++)
@@ -76,13 +77,14 @@ void AGACMMDataActor::BuildDistanceTransform() {
 				{
 					DistanceTransform.SetValue(Cell, 0.0f);
 					Queue.Enqueue({ Cell, 0.0f });
+					Visited.Add(Cell);
 				}
 			}
 		}
 	}
 
 
-	TSet<FCellRef> Visited;
+	
 	//doing bfs
 	while (!Queue.IsEmpty()) {
 		FCellDist Current;
@@ -187,6 +189,85 @@ bool AGACMMDataActor::IsEdgeCell(const AGAGridActor* Grid, const FCellRef& Cell)
 }
 
 
+bool AGACMMDataActor::IsSkeletonCell(const AGAGridActor* Grid, const FCellRef& Cell) const {
+
+	float CurrentVal;
+	DistanceTransform.GetValue(Cell, CurrentVal);
+
+	//ignore edge cells
+	if (CurrentVal <= 0.0f)
+		return false;
+
+	// Four opposing neighbor pairs: left-right, up-down, two diagonals
+	FCellRef NeighborPairs[4][2] = {
+		{ FCellRef(Cell.X - 1, Cell.Y),     FCellRef(Cell.X + 1, Cell.Y) },     // left-right
+		{ FCellRef(Cell.X, Cell.Y - 1),     FCellRef(Cell.X, Cell.Y + 1) },     // up-down
+		{ FCellRef(Cell.X - 1, Cell.Y - 1), FCellRef(Cell.X + 1, Cell.Y + 1) }, // diagonal TopLeft to botR
+		{ FCellRef(Cell.X + 1, Cell.Y - 1), FCellRef(Cell.X - 1, Cell.Y + 1) }  // diagonal TopRight to botL
+	};
+
+	for (int32 i = 0; i < 4; i++)
+	{
+		// For out-of-bounds or non-traversable neighbors, treat as 0 (wall)
+		float ValA = 0.0f;
+		float ValB = 0.0f;
+		if (Grid->IsCellRefInBounds(NeighborPairs[i][0]))
+		{
+			DistanceTransform.GetValue(NeighborPairs[i][0], ValA);
+		}
+
+		if (Grid->IsCellRefInBounds(NeighborPairs[i][1]))
+		{
+			DistanceTransform.GetValue(NeighborPairs[i][1], ValB);
+		}
+
+		/*if (ValA == 0.0f || ValB == 0.0f)
+		{
+			continue;
+		}*/
+		//ridge check larger or equal to both, or strictly larger than one
+		if (CurrentVal >= ValA && CurrentVal >=  ValB && (CurrentVal > ValA || CurrentVal > ValB)) {
+			return true;
+		}
+	}
+
+	return false;
+}
+
+void AGACMMDataActor::BuildSkeleton() {
+	AGAGridActor* Grid = GridActor.Get();
+	if (!Grid) return;
+
+	SkeletonCells.Empty();
+	SkeletonMap = FGAGridMap(Grid, 0.0f);
+
+	for (int32 X = 0; X < Grid->YCount; X++)
+	{
+		for (int32 Y = 0; Y < Grid->XCount; Y++)
+		{
+			FCellRef Cell(X, Y);
+
+			if (!EnumHasAllFlags(Grid->GetCellData(Cell), ECellData::CellDataTraversable))
+			{
+				continue;
+			}
+
+			if (IsSkeletonCell(Grid, Cell))
+			{
+				SkeletonCells.Add(Cell);
+				// Store the clearance value from distance transform
+				float Clearance;
+				DistanceTransform.GetValue(Cell, Clearance);
+				SkeletonMap.SetValue(Cell, 1.0f);
+			}
+		}
+	}
+
+	UE_LOG(LogTemp, Log, TEXT("AGACMMDataActor::BuildSkeleton — Found %d skeleton cells."), SkeletonCells.Num());
+
+}
+
+
 TArray<FCellRef> AGACMMDataActor::GetNeighbors(const FCellRef& Cell, const AGAGridActor* Grid) const {
 
 	TArray<FCellRef> Neighbors;
@@ -220,4 +301,18 @@ void AGACMMDataActor::DebugDrawDistanceTransform()
 	Grid->DebugGridMap = DistanceTransform;
 	Grid->RefreshDebugTexture();
 	Grid->DebugMeshComponent->SetVisibility(true);
+}
+
+
+void AGACMMDataActor::DebugDrawSkeleton()
+{
+	AGAGridActor* Grid = GridActor.Get();
+	if (!Grid) return;
+
+	//// Option 1: Use the debug texture
+	Grid->DebugGridMap = SkeletonMap;
+	Grid->RefreshDebugMesh();
+	Grid->RefreshDebugTexture();
+	Grid->DebugMeshComponent->SetVisibility(true);
+
 }
