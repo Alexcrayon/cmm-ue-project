@@ -52,6 +52,61 @@ const AGAGridActor* AGACMMDataActor::GetGridActor() const
 		return Result;
 	}
 }
+void AGACMMDataActor::BuildCMMData()
+{
+	AGAGridActor* Grid = GridActor.Get();
+	if (!Grid) return;
+
+	// Phase 1
+	BuildDistanceTransform();
+
+	// Debug step: just trace outlines and visualize them
+	//TArray<TArray<FCellRef>> Outlines = TraceAllBorderOutlines(Grid);
+	BuildColoredSkeleton();
+	//MergeSmallLoops();
+
+	
+
+	if (bDebugColorMap)
+	{
+		DebugDrawColorMap();
+	}
+
+
+	// debug code
+	//int32 TotalEdgeCells = 0;
+	//int32 TracedCells = 0;
+	//for (int32 Y = 0; Y < Grid->YCount; Y++)
+	//{
+	//	for (int32 X = 0; X < Grid->XCount; X++)
+	//	{
+	//		FCellRef Cell(X, Y);
+	//		if (IsEdgeCell(Grid, Cell)) TotalEdgeCells++;
+	//	}
+	//}
+	//for (const TArray<FCellRef>& Outline : Outlines)
+	//{
+	//	TracedCells += Outline.Num();
+	//}
+
+	//UE_LOG(LogTemp, Warning, TEXT("Total edge cells: %d, Traced cells: %d, Outlines: %d"),
+	//	TotalEdgeCells, TracedCells, Outlines.Num());
+
+	//// Visualize each outline in a different color
+	//for (int32 i = 0; i < Outlines.Num(); i++)
+	//{
+	//
+	//	FColor Colors[] = { FColor::Red, FColor::Green, FColor::Blue,
+	//					   FColor::Yellow, FColor::Cyan, FColor::Magenta };
+	//	FColor Color = Colors[i % 6];
+
+	//	for (const FCellRef& Cell : Outlines[i])
+	//	{
+	//		FVector Pos = Grid->GetCellPosition(Cell);
+	//		DrawDebugPoint(GetWorld(), Pos + FVector(0, 0, 50), 5.0f, Color, false, 30.0f);
+	//	}
+	//}
+}
 
 void AGACMMDataActor::BuildDistanceTransform() {
 	AGAGridActor* Grid = GridActor.Get();
@@ -287,6 +342,278 @@ TArray<FCellRef> AGACMMDataActor::GetNeighbors(const FCellRef& Cell, const AGAGr
 }
 
 
+//colored grassfire related:
+TArray<TArray<FCellRef>> AGACMMDataActor::TraceAllBorderOutlines(const AGAGridActor* Grid)
+{
+	TArray<TArray<FCellRef>> AllOutlines;
+	TSet<FCellRef> GlobalVisited;
+
+	for (int32 Y = 0; Y < Grid->YCount; Y++)
+	{
+		for (int32 X = 0; X < Grid->XCount; X++)
+		{
+			FCellRef Cell(X, Y);
+
+			if (GlobalVisited.Contains(Cell)) continue;
+			if (!EnumHasAllFlags(Grid->GetCellData(Cell), ECellData::CellDataTraversable)) continue;
+			if (!IsEdgeCell(Grid, Cell)) continue;
+
+			TArray<FCellRef> Outline = TraceSingleOutline(Grid, Cell, GlobalVisited);
+			if (Outline.Num() > 2)
+			{
+				AllOutlines.Add(Outline);
+			}
+		}
+	}
+
+	UE_LOG(LogTemp, Log, TEXT("TraceAllBorderOutlines - Found %d outlines."), AllOutlines.Num());
+	return AllOutlines;
+}
+
+
+FCellRef AGACMMDataActor::FindNextBorderCell(const AGAGridActor* Grid, const FCellRef& Current, int32& InOutDirection, const TSet<FCellRef>& Visited) const
+{
+	// 8 directions in clockwise order
+	const FCellRef Dirs[8] = {
+		FCellRef(1, 0),   // right
+		FCellRef(1, 1),   // bot-right
+		FCellRef(0, 1),   // bot
+		FCellRef(-1, 1),  // bot-left
+		FCellRef(-1, 0),  // left
+		FCellRef(-1, -1), // top-left
+		FCellRef(0, -1),  // top
+		FCellRef(1, -1)   // top-right
+	};
+
+	// Start searching from opposite direction + 1 for clockwise traversal
+	int32 StartDir = (InOutDirection + 5) % 8;
+
+	for (int32 i = 0; i < 8; i++)
+	{
+		int32 Dir = (StartDir + i) % 8;
+		FCellRef Next(Current.X + Dirs[Dir].X, Current.Y + Dirs[Dir].Y);
+
+		if (!Grid->IsCellRefInBounds(Next)) continue;
+		if (!EnumHasAllFlags(Grid->GetCellData(Next), ECellData::CellDataTraversable)) continue;
+		if (!IsEdgeCell(Grid, Next)) continue;
+		if (Visited.Contains(Next)) continue;
+
+		InOutDirection = Dir;
+		return Next;
+	}
+
+	return FCellRef::Invalid;
+}
+
+
+TArray<FCellRef> AGACMMDataActor::TraceSingleOutline(const AGAGridActor* Grid, const FCellRef& Start, TSet<FCellRef>& GlobalVisited)
+{
+	TArray<FCellRef> Outline;
+	FCellRef Current = Start;
+	int32 Direction = 0;
+
+	int32 MaxSteps = Grid->XCount * Grid->YCount;
+	int32 Steps = 0;
+
+	do
+	{
+		Outline.Add(Current);
+		GlobalVisited.Add(Current);
+
+		FCellRef Next = FindNextBorderCell(Grid, Current, Direction, GlobalVisited);
+
+		if (!Next.IsValid())
+		{
+			break;
+		}
+
+		Current = Next;
+		Steps++;
+
+	} while (!(Current == Start) && Steps < MaxSteps);
+
+	UE_LOG(LogTemp, Log, TEXT("TraceSingleOutline - Traced %d cells."), Outline.Num());
+	return Outline;
+}
+
+
+// Ramer-Douglas-Peucker
+void AGACMMDataActor::SegmentOutline(const TArray<FCellRef>& Outline, int32 Start, int32 End, float Threshold, TArray<int32>& SplitIndices)
+{
+	if (End - Start < 2) return;
+
+	FVector2D LineStart(Outline[Start].X, Outline[Start].Y);
+	FVector2D LineEnd(Outline[End].X, Outline[End].Y);
+	FVector2D LineDir = LineEnd - LineStart;
+	float LineLength = LineDir.Size();
+
+	if (LineLength < KINDA_SMALL_NUMBER) 
+		return;
+	
+	LineDir /= LineLength;
+
+	float MaxDist = 0.0f;
+	int32 MaxIndex = Start;
+
+	for (int32 i = Start + 1; i < End; i++)
+	{
+		FVector2D Point(Outline[i].X, Outline[i].Y);
+		FVector2D ToPoint = Point - LineStart;
+		float Dist = FMath::Abs(ToPoint.X * LineDir.Y - ToPoint.Y * LineDir.X);
+
+		if (Dist > MaxDist)
+		{
+			MaxDist = Dist;
+			MaxIndex = i;
+		}
+	}
+
+	if (MaxDist > Threshold)
+	{
+		SegmentOutline(Outline, Start, MaxIndex, Threshold, SplitIndices);
+		SplitIndices.Add(MaxIndex);
+		SegmentOutline(Outline, MaxIndex, End, Threshold, SplitIndices);
+	}
+}
+
+
+// Colored BFS
+void AGACMMDataActor::ColoredGrassfireBFS(const AGAGridActor* Grid, const TArray<FCellRef>& AllEdgeCells, const FGAGridMap& EdgeColorMap, TSet<uint64> IgnorePairs)
+{
+	// Rebuild distance transform and color map from scratch
+	DistanceTransform = FGAGridMap(Grid, 0.0f);
+	ColorMap = FGAGridMap(Grid, -1.0f);  // -1 = unvisited
+
+	SkeletonCells.Empty();
+	SkeletonMap = FGAGridMap(Grid, 0.0f);
+
+	TQueue<FCellDist> Queue;
+	TSet<FCellRef> SkeletonSet;
+
+	// Enqueue all edge cells with their color
+	for (const FCellRef& Cell : AllEdgeCells)
+	{
+		float Color;
+		EdgeColorMap.GetValue(Cell, Color);
+		ColorMap.SetValue(Cell, Color);
+		DistanceTransform.SetValue(Cell, 0.0f);
+		Queue.Enqueue({ Cell, 0.0f });
+	}
+
+	while (!Queue.IsEmpty())
+	{
+		FCellDist Current;
+		Queue.Dequeue(Current);
+
+		float CurrentColor;
+		ColorMap.GetValue(Current.Cell, CurrentColor);
+
+		for (const FCellRef& Offset : Offsets)
+		{
+			FCellRef Neighbor(Current.Cell.X + Offset.X, Current.Cell.Y + Offset.Y);
+
+			if (!Grid->IsCellRefInBounds(Neighbor)) continue;
+			if (!EnumHasAllFlags(Grid->GetCellData(Neighbor), ECellData::CellDataTraversable)) continue;
+
+			float NeighborColor;
+			ColorMap.GetValue(Neighbor, NeighborColor);
+
+			float NewDist = Current.Distance + 1.0f;
+
+			if (NeighborColor < 0.0f)
+			{
+				// Unvisited 
+				ColorMap.SetValue(Neighbor, CurrentColor);
+				DistanceTransform.SetValue(Neighbor, NewDist);
+				Queue.Enqueue({ Neighbor, NewDist });
+			}
+			//  collision with another edge
+			else if (NeighborColor != CurrentColor)
+			{
+				
+				//not handle convex corner right now
+				if (CurrentColor < NeighborColor)
+				{
+				 
+					if (!SkeletonSet.Contains(Current.Cell))
+					{
+						SkeletonSet.Add(Current.Cell);
+						SkeletonCells.Add(Current.Cell);
+						float Dist;
+						DistanceTransform.GetValue(Current.Cell, Dist);
+						//SkeletonMap.SetValue(Current.Cell, Dist);
+						SkeletonMap.SetValue(Current.Cell, 1.0f);
+					}
+			
+				}
+			
+			}
+		}
+	}
+
+	UE_LOG(LogTemp, Log, TEXT("ColoredGrassfireBFS - Found %d skeleton cells."), SkeletonCells.Num());
+}
+
+
+// Main builder
+void AGACMMDataActor::BuildColoredSkeleton()
+{
+	AGAGridActor* Grid = GridActor.Get();
+	if (!Grid) return;
+
+	// Trace border outlines
+	TArray<TArray<FCellRef>> Outlines = TraceAllBorderOutlines(Grid);
+
+	// run rdp and assign colors
+	FGAGridMap EdgeColorMap(Grid, -1.0f);
+	TArray<FCellRef> AllEdgeCells;
+	int32 ColorCounter = 0;
+	float RDPThreshold = 1.5f;
+
+	for (const TArray<FCellRef>& Outline : Outlines)
+	{
+		TArray<int32> SplitIndices;
+		SplitIndices.Add(0);
+		SegmentOutline(Outline, 0, Outline.Num() - 1, RDPThreshold, SplitIndices);
+		SplitIndices.Add(Outline.Num() - 1);
+		SplitIndices.Sort();
+
+		for (int32 i = 0; i < SplitIndices.Num() - 1; i++)
+		{
+			float Color = (float)ColorCounter;
+
+			for (int32 j = SplitIndices[i]; j <= SplitIndices[i + 1]; j++)
+			{
+				EdgeColorMap.SetValue(Outline[j], Color);
+				AllEdgeCells.AddUnique(Outline[j]);
+			}
+
+			ColorCounter++;
+		}
+	}
+
+	UE_LOG(LogTemp, Log, TEXT("BuildColoredSkeleton - %d edge segments, %d edge cells."), ColorCounter, AllEdgeCells.Num());
+
+	//not used 
+	TSet <uint64> IgnorePairs;
+
+	// Run colored BFS
+	ColoredGrassfireBFS(Grid, AllEdgeCells, EdgeColorMap, IgnorePairs);
+}
+
+
+void AGACMMDataActor::DebugDrawColorMap()
+{
+	AGAGridActor* Grid = GridActor.Get();
+	if (!Grid) return;
+
+	Grid->DebugGridMap = ColorMap;
+	Grid->RefreshDebugMesh();
+	Grid->RefreshDebugTexture();
+	Grid->DebugMeshComponent->SetVisibility(true);
+}
+
+
 void AGACMMDataActor::DebugDrawDistanceTransform()
 {
 	AGAGridActor* Grid = GridActor.Get();
@@ -309,7 +636,6 @@ void AGACMMDataActor::DebugDrawSkeleton()
 	AGAGridActor* Grid = GridActor.Get();
 	if (!Grid) return;
 
-	//// Option 1: Use the debug texture
 	Grid->DebugGridMap = SkeletonMap;
 	Grid->RefreshDebugMesh();
 	Grid->RefreshDebugTexture();

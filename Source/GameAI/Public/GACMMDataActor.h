@@ -49,6 +49,29 @@ public:
 	void DebugDrawDistanceTransform();
 	UFUNCTION(BlueprintCallable)
 	void DebugDrawSkeleton();
+
+	//colored grassfire
+	UPROPERTY(BlueprintReadOnly)
+	FGAGridMap ColorMap;
+
+	UFUNCTION(BlueprintCallable)
+	void BuildColoredSkeleton();
+
+	TArray<TArray<FCellRef>> TraceAllBorderOutlines(const AGAGridActor* Grid);
+	TArray<FCellRef> TraceSingleOutline(const AGAGridActor* Grid, const FCellRef& Start, TSet<FCellRef>& GlobalVisited);
+	FCellRef FindNextBorderCell(const AGAGridActor* Grid, const FCellRef& Current, int32& InOutDirection, const TSet<FCellRef>& Visited) const;
+	void SegmentOutline(const TArray<FCellRef>& Outline, int32 Start, int32 End, float Threshold, TArray<int32>& SplitIndices);
+	void ColoredGrassfireBFS(const AGAGridActor* Grid, const TArray<FCellRef>& AllEdgeCells, const FGAGridMap& EdgeColorMap, TSet<uint64> IgnorePairs);
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite)
+	bool bDebugColorMap = true;
+
+	UFUNCTION(BlueprintCallable)
+	void DebugDrawColorMap();
+
+	UFUNCTION(BlueprintCallable)
+	void BuildCMMData();
+
 protected:
 	// Called when the game starts or when spawned
 	virtual void BeginPlay() override;
@@ -68,5 +91,8 @@ private:
 		FCellRef(1, -1),
 		FCellRef(-1, -1)
 	};
+
+	//void DeleteSkeletonBranches(int32 MinBranchLength);
+	//void MergeSmallLoops();
 
 };
