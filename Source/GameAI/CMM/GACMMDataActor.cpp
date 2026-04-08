@@ -1,4 +1,4 @@
-// Fill out your copyright notice in the Description page of Project Settings.
+﻿// Fill out your copyright notice in the Description page of Project Settings.
 
 
 #include "GACMMDataActor.h"
@@ -65,12 +65,12 @@ void AGACMMDataActor::BuildCMMData()
 	BuildColoredSkeleton();
 	//MergeSmallLoops();
 
-	
+	BuildBackboneGraph();
 
-	if (bDebugColorMap)
+	/*if (bDebugColorMap)
 	{
 		DebugDrawColorMap();
-	}
+	}*/
 
 
 	// debug code
@@ -226,7 +226,7 @@ bool AGACMMDataActor::IsEdgeCell(const AGAGridActor* Grid, const FCellRef& Cell)
 
 		if (!Grid->IsCellRefInBounds(Neighbor))
 		{
-			// Neighbor is out of bounds � this cell is on the grid edge
+			// Neighbor is out of bounds — this cell is on the grid edge
 			return true;
 		}
 
@@ -318,7 +318,7 @@ void AGACMMDataActor::BuildSkeleton() {
 		}
 	}
 
-	UE_LOG(LogTemp, Log, TEXT("AGACMMDataActor::BuildSkeleton � Found %d skeleton cells."), SkeletonCells.Num());
+	UE_LOG(LogTemp, Log, TEXT("AGACMMDataActor::BuildSkeleton — Found %d skeleton cells."), SkeletonCells.Num());
 
 }
 
@@ -602,6 +602,183 @@ void AGACMMDataActor::BuildColoredSkeleton()
 }
 
 
+
+void AGACMMDataActor::BuildBackboneGraph()
+{
+	AGAGridActor* Grid = GridActor.Get();
+	if (!Grid) return;
+
+	Graph.Nodes.Empty();
+
+	// Step 1: Classify skeleton cells — create nodes for dead ends and junctions
+	TSet<FCellRef> NodeCells;
+
+	for (const FCellRef& Cell : SkeletonCells)
+	{
+		int32 NeighborCount = 0;
+		for (const FCellRef& Offset : Offsets)
+		{
+			FCellRef N(Cell.X + Offset.X, Cell.Y + Offset.Y);
+			float Val;
+			if (SkeletonMap.GetValue(N, Val) && Val > 0.0f)
+			{
+				NeighborCount++;
+			}
+		}
+
+		// Dead end (1) or junction (3+) → becomes a node
+		if (NeighborCount != 2)
+		{
+			FBackboneNode Node;
+			Node.Cell = Cell;
+			Node.WorldPosition = Grid->GetCellPosition(Cell);
+			DistanceTransform.GetValue(Cell, Node.Clearance);
+
+			NodeCells.Add(Cell);
+			Graph.Nodes.Add(Node);
+		}
+	}
+
+	UE_LOG(LogTemp, Log, TEXT("BuildBackboneGraph - %d nodes found"), Graph.Nodes.Num());
+
+	// Step 2: Walk chains from each node to build adjacency lists
+	// Track processed edges by storing the first chain cell to distinguish parallel paths
+	TSet<FCellRef> VisitedChainStarts;
+
+	for (FBackboneNode& StartNode :Graph.Nodes)
+	{
+		// Check each skeleton neighbor of this node
+		for (const FCellRef& Offset : Offsets)
+		{
+			FCellRef NextCell(StartNode.Cell.X + Offset.X, StartNode.Cell.Y + Offset.Y);
+			float Val;
+			if (!SkeletonMap.GetValue(NextCell, Val) || Val <= 0.0f) continue;
+
+			// Case 1: Neighbor is another node (direct connection)
+			if (NodeCells.Contains(NextCell))
+			{
+				// Only add from one direction to avoid duplicates
+				// Use cell comparison as tiebreaker
+				if (StartNode.Cell.X > NextCell.X ||
+					(StartNode.Cell.X == NextCell.X && StartNode.Cell.Y > NextCell.Y)) continue;
+
+				FBackboneEdge EdgeData;
+				EdgeData.PathPoints.Add(StartNode.WorldPosition);
+				FBackboneNode* EndNode = Graph.FindNode(NextCell);
+				EdgeData.PathPoints.Add(EndNode->WorldPosition);
+				EdgeData.Clearances.Add(StartNode.Clearance);
+				EdgeData.Clearances.Add(EndNode->Clearance);
+				EdgeData.Length = FVector::Dist(StartNode.WorldPosition, EndNode->WorldPosition);
+
+				// Add to start node
+				StartNode.NeighborNodes.Add(NextCell);
+				StartNode.NeighborCosts.Add(EdgeData.Length);
+				StartNode.NeighborEdge.Add(EdgeData);
+
+				// Reverse for end node
+				FBackboneEdge ReverseData;
+				ReverseData.PathPoints = EdgeData.PathPoints;
+				Algo::Reverse(ReverseData.PathPoints);
+				ReverseData.Clearances = EdgeData.Clearances;
+				Algo::Reverse(ReverseData.Clearances);
+				ReverseData.Length = EdgeData.Length;
+
+				EndNode->NeighborNodes.Add(StartNode.Cell);
+				EndNode->NeighborCosts.Add(EdgeData.Length);
+				EndNode->NeighborEdge.Add(ReverseData);
+
+				continue;
+			}
+
+			// Case 2: Neighbor is a chain cell — walk along it
+			// Use the chain start cell to track whether we've processed this edge
+			if (VisitedChainStarts.Contains(NextCell)) continue;
+			VisitedChainStarts.Add(NextCell);
+
+			FBackboneEdge EdgeData;
+			EdgeData.Length = 0.0f;
+			EdgeData.PathPoints.Add(StartNode.WorldPosition);
+			EdgeData.Clearances.Add(StartNode.Clearance);
+
+			FCellRef CurrentCell = NextCell;
+			FCellRef PrevCell = StartNode.Cell;
+
+			while (true)
+			{
+				FVector CurrPos = Grid->GetCellPosition(CurrentCell);
+				float CurrClearance;
+				DistanceTransform.GetValue(CurrentCell, CurrClearance);
+
+				EdgeData.Length += FVector::Dist(EdgeData.PathPoints.Last(), CurrPos);
+				EdgeData.PathPoints.Add(CurrPos);
+				EdgeData.Clearances.Add(CurrClearance);
+
+				// Reached another node?
+				if (NodeCells.Contains(CurrentCell))
+				{
+					// Mark the last chain cell before this node so the reverse walk skips it
+					VisitedChainStarts.Add(PrevCell);
+
+					FBackboneNode* EndNode = Graph.FindNode(CurrentCell);
+
+					// Add to start node
+					StartNode.NeighborNodes.Add(CurrentCell);
+					StartNode.NeighborCosts.Add(EdgeData.Length);
+					StartNode.NeighborEdge.Add(EdgeData);
+
+					// Reverse for end node
+					FBackboneEdge ReverseData;
+					ReverseData.PathPoints = EdgeData.PathPoints;
+					Algo::Reverse(ReverseData.PathPoints);
+					ReverseData.Clearances = EdgeData.Clearances;
+					Algo::Reverse(ReverseData.Clearances);
+					ReverseData.Length = EdgeData.Length;
+
+					EndNode->NeighborNodes.Add(StartNode.Cell);
+					EndNode->NeighborCosts.Add(EdgeData.Length);
+					EndNode->NeighborEdge.Add(ReverseData);
+
+					break;
+				}
+
+				// Find next chain cell (not where we came from)
+				bool bFoundNext = false;
+				for (const FCellRef& ChainOffset : Offsets)
+				{
+					FCellRef N(CurrentCell.X + ChainOffset.X, CurrentCell.Y + ChainOffset.Y);
+					float NVal;
+					if (!SkeletonMap.GetValue(N, NVal) || NVal <= 0.0f) continue;
+					if (N == PrevCell) continue;
+
+					PrevCell = CurrentCell;
+					CurrentCell = N;
+					bFoundNext = true;
+					break;
+				}
+
+				if (!bFoundNext)
+				{
+					UE_LOG(LogTemp, Warning, TEXT("BuildBackboneGraph - Orphaned chain at (%d, %d)"),
+						CurrentCell.X, CurrentCell.Y);
+					break;
+				}
+			}
+		}
+	}
+
+	// Log summary
+	int32 TotalEdges = 0;
+	for (const FBackboneNode& Node : Graph.Nodes)
+	{
+		TotalEdges += Node.NeighborNodes.Num();
+	}
+	TotalEdges /= 2;
+
+	UE_LOG(LogTemp, Log, TEXT("BuildBackboneGraph - %d nodes, %d edges"),
+		Graph.Nodes.Num(), TotalEdges);
+}
+
+
 void AGACMMDataActor::DebugDrawColorMap()
 {
 	AGAGridActor* Grid = GridActor.Get();
@@ -641,4 +818,68 @@ void AGACMMDataActor::DebugDrawSkeleton()
 	Grid->RefreshDebugTexture();
 	Grid->DebugMeshComponent->SetVisibility(true);
 
+}
+
+
+void AGACMMDataActor::DebugDrawBackboneGraph()
+{
+	AGAGridActor* Grid = GridActor.Get();
+	if (!Grid) return;
+
+	float ZOffset = 60.0f;
+
+	// Draw nodes
+	for (const FBackboneNode& Node : Graph.Nodes)
+	{
+		FVector Pos = Node.WorldPosition + FVector(0, 0, ZOffset);
+
+		// Dead ends = yellow, junctions = red
+		FColor NodeColor = (Node.NeighborNodes.Num() <= 1) ? FColor::Yellow : FColor::Red;
+
+		DrawDebugSphere(GetWorld(), Pos, 30.0f, 8, NodeColor, false, 30.0f);
+
+		// Clearance circle at node
+		float WorldRadius = Node.Clearance * Grid->CellScale;
+		DrawDebugCircle(
+			GetWorld(), Pos, WorldRadius, 32,
+			FColor::Green, false, 30.0f, 0, 2.0f,
+			FVector(1, 0, 0), FVector(0, 1, 0)
+		);
+	}
+
+	// Draw edges — only draw when neighbor cell > own cell to avoid doubles
+	for (const FBackboneNode& Node : Graph.Nodes)
+	{
+		for (int32 i = 0; i < Node.NeighborNodes.Num(); i++)
+		{
+			FCellRef NeighborCell = Node.NeighborNodes[i];
+
+			// Only draw from lower cell to higher cell
+			if (Node.Cell.X > NeighborCell.X ||
+				(Node.Cell.X == NeighborCell.X && Node.Cell.Y > NeighborCell.Y)) continue;
+
+			const FBackboneEdge& EdgeData = Node.NeighborEdge[i];
+
+			// Draw path line
+			for (int32 k = 1; k < EdgeData.PathPoints.Num(); k++)
+			{
+				FVector A = EdgeData.PathPoints[k - 1] + FVector(0, 0, ZOffset);
+				FVector B = EdgeData.PathPoints[k] + FVector(0, 0, ZOffset);
+				DrawDebugLine(GetWorld(), A, B, FColor::Cyan, false, 30.0f, 0, 3.0f);
+			}
+
+			// Draw clearance circles along edge
+			for (int32 k = 0; k < EdgeData.PathPoints.Num(); k++)
+			{
+				FVector Pos = EdgeData.PathPoints[k] + FVector(0, 0, ZOffset);
+				float WorldRadius = EdgeData.Clearances[k] * Grid->CellScale;
+
+				DrawDebugCircle(
+					GetWorld(), Pos, WorldRadius, 24,
+					FColor(0, 255, 0, 60), false, 30.0f, 0, 1.0f,
+					FVector(1, 0, 0), FVector(0, 1, 0)
+				);
+			}
+		}
+	}
 }

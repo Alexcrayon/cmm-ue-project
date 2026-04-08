@@ -8,6 +8,46 @@
 #include "GameAI/Grid/GAGridActor.h"
 #include "GACMMDataActor.generated.h"
 
+
+struct FBackboneEdge {
+
+	TArray<float> Clearances;
+
+	TArray<FVector> PathPoints;
+	//what is for?
+	float Length;
+};
+
+struct FBackboneNode {
+	FCellRef Cell;
+
+	float Clearance;
+
+	FVector WorldPosition;
+
+	TArray<FCellRef> NeighborNodes;
+
+	TArray<float> NeighborCosts;
+
+	TArray<FBackboneEdge> NeighborEdge;
+
+
+};
+
+struct FBackboneGraph {
+	TArray<FBackboneNode> Nodes;
+
+	FBackboneNode* FindNode(const FCellRef& Cell)
+	{
+		for (FBackboneNode& Node : Nodes)
+		{
+			if (Node.Cell == Cell) return &Node;
+		}
+		return nullptr;
+	}
+};
+
+
 UCLASS(BlueprintType, Blueprintable)
 class GAMEAI_API AGACMMDataActor : public AActor
 {
@@ -72,6 +112,11 @@ public:
 	UFUNCTION(BlueprintCallable)
 	void BuildCMMData();
 
+	UFUNCTION(BlueprintCallable)
+	void DebugDrawBackboneGraph();
+
+
+	FBackboneGraph Graph;
 protected:
 	// Called when the game starts or when spawned
 	virtual void BeginPlay() override;
@@ -92,6 +137,11 @@ private:
 		FCellRef(-1, -1)
 	};
 
+	
+
+	void BuildBackboneGraph();
+	
+	
 	//void DeleteSkeletonBranches(int32 MinBranchLength);
 	//void MergeSmallLoops();
 
