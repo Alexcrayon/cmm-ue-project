@@ -175,6 +175,8 @@ EGAPathState UGAPathComponent::AStar(const FVector& StartPoint, TArray<FPathStep
 			// hit goal
 			// start backtracing path
 			if (currCell == DestinationCell) {
+				/*UE_LOG(LogTemp, Warning, TEXT("Grid A*: expanded %d of %d traversable cells"),
+					visited.Num(), Grid->XCount * Grid->YCount);*/
 				TArray<FCellRef> Path = TracePath(CameFrom, startCell,DestinationCell);
 				
 				StepsOut.SetNum(Path.Num());
@@ -199,6 +201,7 @@ EGAPathState UGAPathComponent::AStar(const FVector& StartPoint, TArray<FPathStep
 			}
 		}
 	}
+
 	return GAPS_Invalid;
 }
 TArray<FCellRef> UGAPathComponent::TracePath(const TMap<FCellRef, FCellRef>& CameFrom, FCellRef Start, FCellRef Dest) const{
