@@ -106,6 +106,9 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite)
 	bool bDebugColorMap = true;
 
+	UPROPERTY(EditAnywhere, BlueprintReadWrite)
+	bool bDebugBackbone = true;
+
 	UFUNCTION(BlueprintCallable)
 	void DebugDrawColorMap();
 
@@ -115,7 +118,9 @@ public:
 	UFUNCTION(BlueprintCallable)
 	void DebugDrawBackboneGraph();
 
+	void KeepLargestComponent();
 
+	//void MergeSmallLoops();
 	FBackboneGraph Graph;
 protected:
 	// Called when the game starts or when spawned

@@ -59,6 +59,8 @@ void AGACMMDataActor::BuildCMMData()
 
 	BuildDistanceTransform();
 	
+	// Debug step: just trace outlines and visualize them
+	//TArray<TArray<FCellRef>> Outlines = TraceAllBorderOutlines(Grid);
 	BuildColoredSkeleton();
 	//BuildSkeleton();
 	
@@ -66,9 +68,14 @@ void AGACMMDataActor::BuildCMMData()
 	BuildBackboneGraph();
 	
 	KeepLargestComponent();
-	
-	DebugDrawBackboneGraph();
-	
+	/*if (bDebugColorMap)
+	{
+		DebugDrawColorMap();
+	}*/
+
+	if (bDebugBackbone) {
+		DebugDrawBackboneGraph();
+	}
 
 }
 
@@ -728,8 +735,17 @@ void AGACMMDataActor::BuildBackboneGraph()
 		}
 	}
 
+	// Log summary
+	int32 TotalEdges = 0;
+	for (const FBackboneNode& Node : Graph.Nodes)
+	{
+		TotalEdges += Node.NeighborNodes.Num();
+	}
+	TotalEdges /= 2;
+
+	UE_LOG(LogTemp, Log, TEXT("BuildBackboneGraph - %d nodes, %d edges"),
+		Graph.Nodes.Num(), TotalEdges);
 }
-//temp fix
 void AGACMMDataActor::KeepLargestComponent()
 {
 	// BFS from each unvisited node to find components
@@ -864,11 +880,16 @@ void AGACMMDataActor::DebugDrawBackboneGraph()
 	{
 		FVector Pos = Node.WorldPosition + FVector(0, 0, ZOffset);
 
+		// Dead ends = yellow, junctions = red
+		FColor NodeColor = (Node.NeighborNodes.Num() <= 1) ? FColor::Yellow : FColor::Red;
+
+		//DrawDebugSphere(GetWorld(), Pos, 30.0f, 8, NodeColor, false, 30.0f);
+
 		// Clearance circle at node
 		float WorldRadius = Node.Clearance * Grid->CellScale;
 		DrawDebugCircle(
 			GetWorld(), Pos, WorldRadius, 32,
-			FColor::Green, false, 10.0f, 0, 2.0f,
+			FColor::Green, false, 30.0f, 0, 2.0f,
 			FVector(1, 0, 0), FVector(0, 1, 0)
 		);
 	}
